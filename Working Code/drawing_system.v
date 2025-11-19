@@ -343,7 +343,7 @@ end
 vga_adapter #(
     .RESOLUTION("320x240"),
     .COLOR_DEPTH(9),
-    .BACKGROUND_IMAGE("./MIF/black.mif")
+    .BACKGROUND_IMAGE("black.mif")
 ) VGA (
     .resetn(resetn),
     .clock(CLOCK_50),

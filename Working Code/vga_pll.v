@@ -53,7 +53,7 @@ module vga_pll (
 				);
 	defparam
 		altpll_component.operation_mode = "NORMAL",
-		altpll_component.intended_device_family = "Cyclone II",
+		altpll_component.intended_device_family = "Cyclone V",
 		altpll_component.lpm_type = "altpll",
 		altpll_component.pll_type = "FAST",
 		/* Specify the input clock to be a 50MHz clock. A 50 MHz clock is present
