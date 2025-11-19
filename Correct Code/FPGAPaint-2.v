@@ -1,4 +1,4 @@
-module FPGAPaint (
+module BitEyesCanvas (
 	input [9:0] SW,
 	input [3:0] KEY,
 	input CLOCK_50,
@@ -34,6 +34,7 @@ parameter SCREEN_HEIGHT = 240;
 parameter COLOR_BACKGROUND = 9'b000_000_000; // Black background
 parameter COLOR_DRAW = 9'b111_111_111;       // White drawing color
 parameter COLOR_ERASE = 9'b000_000_000;      // Black (for erasing)
+parameter COLOR_CANVAS = 9'b111_111_111;     // White canvas background
 
 // FOR COLORS
 wire [8:0] pen_colors;
@@ -69,6 +70,59 @@ reg vga_write;
 // Drawing state
 wire drawing_active;
 assign drawing_active = drawing_enabled && mouse_left_button;
+
+// ============================================
+// SCREEN CLEARING STATE MACHINE
+// ============================================
+// States for the clearing process
+localparam IDLE = 2'b00;
+localparam CLEARING = 2'b01;
+localparam WAIT_CLEAR = 2'b10;
+
+reg [1:0] clear_state;
+reg [8:0] clear_x;  // Current X position being cleared
+reg [7:0] clear_y;  // Current Y position being cleared
+reg clearing_active;  // Flag to indicate we're in clearing mode
+
+// Screen clearing state machine
+always @(posedge CLOCK_50) begin
+	if (reset) begin
+		// Start the clearing process
+		clear_state <= CLEARING;
+		clear_x <= 9'd0;
+		clear_y <= 8'd0;
+		clearing_active <= 1'b1;
+	end
+	else begin
+		case (clear_state)
+			IDLE: begin
+				clearing_active <= 1'b0;
+			end
+			
+			CLEARING: begin
+				// Move to next pixel
+				if (clear_x == SCREEN_WIDTH - 1) begin
+					clear_x <= 9'd0;
+					if (clear_y == SCREEN_HEIGHT - 1) begin
+						// Finished clearing the screen
+						clear_y <= 8'd0;
+						clear_state <= IDLE;
+						clearing_active <= 1'b0;
+					end
+					else begin
+						clear_y <= clear_y + 1;
+					end
+				end
+				else begin
+					clear_x <= clear_x + 1;
+				end
+			end
+			
+			default: clear_state <= IDLE;
+		endcase
+	end
+end
+// ============================================
 
 // Direction indicators - latched so they stay on once detected
 reg move_left_latched;
@@ -201,30 +255,38 @@ always @(posedge CLOCK_50) begin
 	end
 end
 
-// Simple pixel drawing: just draw at cursor location when button is pressed
+// Modified pixel drawing logic to handle clearing and normal drawing
 always @(posedge CLOCK_50) begin
 	if (reset) begin
 		vga_x <= 9'd0;
 		vga_y <= 8'd0;
-		vga_color <= COLOR_BACKGROUND;
+		vga_color <= COLOR_CANVAS;
 		vga_write <= 1'b0;
 	end
 	else begin
+		// Default: no write
 		vga_write <= 1'b0;
 		
-		// Draw pixel at cursor location when drawing is enabled and button is pressed
-		if (drawing_enabled) begin
+		// Priority 1: Screen clearing has highest priority
+		if (clearing_active) begin
+			vga_write <= 1'b1;
+			vga_x <= clear_x;
+			vga_y <= clear_y;
+			vga_color <= COLOR_CANVAS;  // Write white to clear the screen
+		end
+		// Priority 2: Normal drawing when not clearing
+		else if (drawing_enabled && !clearing_active) begin
 			if (mouse_right_button) begin
 				vga_write <= 1'b1;
 				vga_x <= mouse_x_pos;
 				vga_y <= mouse_y_pos;
-				vga_color <= COLOR_DRAW;
+				vga_color <= COLOR_DRAW;  // White for erasing
 			end
 			else if (mouse_left_button) begin
 				vga_write <= 1'b1;
 				vga_x <= mouse_x_pos;
 				vga_y <= mouse_y_pos;
-				vga_color <= pen_colors;
+				vga_color <= pen_colors;  // Black for drawing
 			end
 		end
 	end
@@ -261,7 +323,7 @@ assign LEDR[4] = move_left_latched; // LED[4] = mouse moving left (latched)
 assign LEDR[5] = move_up_latched; // LED[5] = mouse moving up (latched)
 assign LEDR[6] = move_down_latched; // LED[6] = mouse moving down (latched)
 assign LEDR[7] = drawing_active; // LED[7] = currently drawing
-assign LEDR[8] = 1'b0; // LED[8] = unused
+assign LEDR[8] = clearing_active; // LED[8] = currently clearing screen
 assign LEDR[9] = 1'b0; // LED[9] = unused
 
 // ============================================================================
