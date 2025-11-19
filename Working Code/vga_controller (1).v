@@ -11,7 +11,7 @@ module vga_controller(vga_clock, resetn, pixel_color, memory_address,
 		VGA_SYNC_N, VGA_CLK);
 	
     // The VGA resolution, which can be set to "640x480", "320x240", and "160x120"
-    parameter RESOLUTION = "160x120";
+    parameter RESOLUTION = "320x240";
 	parameter COLOR_DEPTH = 3;          // color depth for the video memory
     parameter nX = 8, nY = 7, Mn = 15;  // default bit widths
     parameter COLS = 160, ROWS = 120;   // default COLS x ROWS memory

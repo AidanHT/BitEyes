@@ -40,11 +40,10 @@
  */
 
 module vga_adapter( resetn, clock, color, x, y, write,
-                    VGA_R, VGA_G, VGA_B, VGA_HS, VGA_VS, VGA_BLANK_N, VGA_SYNC_N, VGA_CLK,
-                    read_addr, read_data);
+                    VGA_R, VGA_G, VGA_B, VGA_HS, VGA_VS, VGA_BLANK_N, VGA_SYNC_N, VGA_CLK);
  
     // The VGA resolution, which can be set to "640x480", "320x240", and "160x120"
-    parameter RESOLUTION = "640x480";
+    parameter RESOLUTION = "320x240";
     /* The number of bits used to represent a pixel. An equal number of bits is allocated for 
      * the red (R), green (G) and blue (B) components. Thus, for COLOR_DEPTH = 3, there is one bit
      * for each of the R, G, B components, and eight different colors can be displayed. */
@@ -80,10 +79,6 @@ module vga_adapter( resetn, clock, color, x, y, write,
     /* When write is 1, then at the next positive edge of the clock the pixel at (x,y) will be
      * set to the value of the color input. */
     input wire write;
-    
-    // Read interface for pattern classifier
-    input wire [Mn-1:0] read_addr;
-    output wire [COLOR_DEPTH-1:0] read_data;
     
     // These outputs drive the VGA display
     output wire [7:0] VGA_R; // red output
@@ -141,7 +136,7 @@ module vga_adapter( resetn, clock, color, x, y, write,
     assign writeEn = write & valid_address;
     // write the user's pixel if the (x,y) coordinates supplied are in a valid range
     
-    // Create the dual-port video memory with read-back capability
+    // Create the dual-port video memory
     altsyncram VideoMemory (
         .wren_a (writeEn),      // write enable for port a
         .wren_b (gnd),          // write enable for port b
@@ -152,7 +147,6 @@ module vga_adapter( resetn, clock, color, x, y, write,
         .address_a (user_to_video_memory_addr),
         .address_b (controller_to_video_memory_addr),
         .data_a (color),        // data in from user
-        .q_a (read_data),       // data out for classifier read
         .q_b (to_ctrl_color)    // data out to controller
     );
     defparam
@@ -164,7 +158,6 @@ module vga_adapter( resetn, clock, color, x, y, write,
         VideoMemory.numwords_a = (COLS * ROWS),
         VideoMemory.widthad_b = (Mn),
         VideoMemory.numwords_b = (COLS * ROWS),
-        VideoMemory.outdata_reg_a = "UNREGISTERED",
         VideoMemory.outdata_reg_b = "CLOCK1",
         VideoMemory.address_reg_b = "CLOCK1",
         VideoMemory.clock_enable_input_a = "BYPASS",
