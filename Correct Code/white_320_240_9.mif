@@ -1,0 +1,14 @@
+-- White canvas initialization file for 320x240 resolution
+-- 320x240 pixels, 9-bit RGB color depth
+-- Total pixels: 76800 (0x12C00)
+-- Color: 0x1FF = 111_111_111 (white)
+
+WIDTH=9;
+DEPTH=76800;
+ADDRESS_RADIX=HEX;
+DATA_RADIX=HEX;
+
+CONTENT BEGIN
+  [00000..12BFF] : 1FF;
+END;
+
