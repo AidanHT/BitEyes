@@ -72,33 +72,44 @@ module shape_recognizer (
     // =========================================================
     // 2) Shadow Buffer BRAM Interface
     // =========================================================
-    reg  [16:0] mem_addr;
+    reg  [14:0] mem_addr;
     reg         mem_write_en;
     reg         mem_write_data;
     reg         mem_read_data;
 
-    (* ramstyle = "M10K" *) reg shadow_buffer [0:76799];
+    wire vcc, gnd;
+    assign vcc = 1'b1;
+    assign gnd = 1'b0;
 
     // =========================================================
-    // 3) BRAM Block - Single-Port Synchronous
+    // 3) BRAM Block - Single-Port altsyncram Megafunction
     // =========================================================
-    always @(posedge clk) begin
-        if (!reset_n) begin
-            mem_read_data <= 1'b0;
-        end else begin
-            if (mem_write_en) begin
-                shadow_buffer[mem_addr] <= mem_write_data;
-            end
-            mem_read_data <= shadow_buffer[mem_addr];
-        end
-    end
+    altsyncram shadow_buffer_ram (
+        .wren_a(mem_write_en),
+        .clock0(clk),
+        .clocken0(vcc),
+        .address_a(mem_addr),
+        .data_a(mem_write_data),
+        .q_a(mem_read_data)
+    );
+    defparam
+        shadow_buffer_ram.width_a = 1,
+        shadow_buffer_ram.widthad_a = 15,
+        shadow_buffer_ram.numwords_a = 19200,
+        shadow_buffer_ram.intended_device_family = "Cyclone V",
+        shadow_buffer_ram.operation_mode = "SINGLE_PORT",
+        shadow_buffer_ram.outdata_reg_a = "UNREGISTERED",
+        shadow_buffer_ram.ram_block_type = "M10K",
+        shadow_buffer_ram.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
+        shadow_buffer_ram.power_up_uninitialized = "FALSE",
+        shadow_buffer_ram.init_file = "UNUSED";
 
     // =========================================================
     // 4) Main FSM, Clear Logic
     // =========================================================
     reg [1:0] main_state;
     reg       clearing_active;
-    reg [16:0] clear_addr;
+    reg [14:0] clear_addr;
     
     // Flag to trigger FE FSM start
     reg fe_start_request;
@@ -108,7 +119,7 @@ module shape_recognizer (
         if (!reset_n) begin
             main_state <= MAIN_IDLE;
             clearing_active <= 1'b0;
-            clear_addr <= 17'd0;
+            clear_addr <= 15'd0;
             fe_start_request <= 1'b0;
         end else begin
             // Default
@@ -154,11 +165,11 @@ module shape_recognizer (
             
             // Clear logic - runs independently
             if (clearing_active) begin
-                if (clear_addr == 17'd76799) begin
+                if (clear_addr == 15'd19199) begin
                     clearing_active <= 1'b0;
-                    clear_addr <= 17'd0;
+                    clear_addr <= 15'd0;
                 end else begin
-                    clear_addr <= clear_addr + 17'd1;
+                    clear_addr <= clear_addr + 15'd1;
                 end
             end
         end
@@ -169,20 +180,21 @@ module shape_recognizer (
     // =========================================================
     
     // Address computation wires
-    wire [16:0] draw_addr;
-    wire [16:0] scan_addr;
+    wire [14:0] draw_addr;
+    wire [14:0] scan_addr;
     
-    assign draw_addr = (draw_y * 9'd320) + draw_x;
+    // Scale coordinates from 320x240 to 160x120 by dividing by 2
+    assign draw_addr = ((draw_y >> 1) * 8'd160) + (draw_x >> 1);
     
     // Scan address computation
-    reg [8:0] scan_x;
-    reg [7:0] scan_y;
-    assign scan_addr = (scan_y * 9'd320) + scan_x;
+    reg [7:0] scan_x;
+    reg [6:0] scan_y;
+    assign scan_addr = (scan_y * 8'd160) + scan_x;
     
     // Arbiter - single driver for mem_addr, mem_write_en, mem_write_data
     always @(posedge clk) begin
         if (!reset_n) begin
-            mem_addr <= 17'd0;
+            mem_addr <= 15'd0;
             mem_write_en <= 1'b0;
             mem_write_data <= 1'b0;
         end else begin
@@ -215,10 +227,10 @@ module shape_recognizer (
     // 6) Feature Extraction FSM and Feature Registers
     // =========================================================
     reg [2:0] fe_state;
-    reg [16:0] pixel_count;
-    reg [8:0] bbox_min_x, bbox_max_x;
-    reg [7:0] bbox_min_y, bbox_max_y;
-    reg [9:0] bbox_width, bbox_height;
+    reg [14:0] pixel_count;
+    reg [7:0] bbox_min_x, bbox_max_x;
+    reg [6:0] bbox_min_y, bbox_max_y;
+    reg [8:0] bbox_width, bbox_height;
     reg       canvas_empty;
     
     // Signal to classifier that FE is done
@@ -228,15 +240,15 @@ module shape_recognizer (
     always @(posedge clk) begin
         if (!reset_n) begin
             fe_state <= FE_IDLE;
-            scan_x <= 9'd0;
-            scan_y <= 8'd0;
-            pixel_count <= 17'd0;
-            bbox_min_x <= 9'd319;
-            bbox_max_x <= 9'd0;
-            bbox_min_y <= 8'd239;
-            bbox_max_y <= 8'd0;
-            bbox_width <= 10'd0;
-            bbox_height <= 10'd0;
+            scan_x <= 8'd0;
+            scan_y <= 7'd0;
+            pixel_count <= 15'd0;
+            bbox_min_x <= 8'd159;
+            bbox_max_x <= 8'd0;
+            bbox_min_y <= 7'd119;
+            bbox_max_y <= 7'd0;
+            bbox_width <= 9'd0;
+            bbox_height <= 9'd0;
             canvas_empty <= 1'b1;
             fe_done_flag <= 1'b0;
         end else begin
@@ -252,13 +264,13 @@ module shape_recognizer (
                 
                 FE_INIT: begin
                     // Initialize scan parameters
-                    scan_x <= 9'd0;
-                    scan_y <= 8'd0;
-                    pixel_count <= 17'd0;
-                    bbox_min_x <= 9'd319;
-                    bbox_max_x <= 9'd0;
-                    bbox_min_y <= 8'd239;
-                    bbox_max_y <= 8'd0;
+                    scan_x <= 8'd0;
+                    scan_y <= 7'd0;
+                    pixel_count <= 15'd0;
+                    bbox_min_x <= 8'd159;
+                    bbox_max_x <= 8'd0;
+                    bbox_min_y <= 7'd119;
+                    bbox_max_y <= 7'd0;
                     canvas_empty <= 1'b0;
                     fe_state <= FE_SCAN_ADDR;
                 end
@@ -277,7 +289,7 @@ module shape_recognizer (
                 FE_SCAN_PROC: begin
                     // Process the read data
                     if (mem_read_data == 1'b1) begin
-                        pixel_count <= pixel_count + 17'd1;
+                        pixel_count <= pixel_count + 15'd1;
                         
                         // Update bounding box
                         if (scan_x < bbox_min_x) bbox_min_x <= scan_x;
@@ -287,30 +299,30 @@ module shape_recognizer (
                     end
                     
                     // Advance scan position
-                    if (scan_x == 9'd319) begin
-                        scan_x <= 9'd0;
-                        if (scan_y == 8'd239) begin
+                    if (scan_x == 8'd159) begin
+                        scan_x <= 8'd0;
+                        if (scan_y == 7'd119) begin
                             // Scan complete
                             fe_state <= FE_DONE;
                         end else begin
-                            scan_y <= scan_y + 8'd1;
+                            scan_y <= scan_y + 7'd1;
                             fe_state <= FE_SCAN_ADDR;
                         end
                     end else begin
-                        scan_x <= scan_x + 9'd1;
+                        scan_x <= scan_x + 8'd1;
                         fe_state <= FE_SCAN_ADDR;
                     end
                 end
                 
                 FE_DONE: begin
                     // Compute final dimensions
-                    if (pixel_count != 17'd0) begin
-                        bbox_width  <= (bbox_max_x - bbox_min_x) + 10'd1;
-                        bbox_height <= (bbox_max_y - bbox_min_y) + 10'd1;
+                    if (pixel_count != 15'd0) begin
+                        bbox_width  <= (bbox_max_x - bbox_min_x) + 9'd1;
+                        bbox_height <= (bbox_max_y - bbox_min_y) + 9'd1;
                         canvas_empty <= 1'b0;
                     end else begin
-                        bbox_width  <= 10'd0;
-                        bbox_height <= 10'd0;
+                        bbox_width  <= 9'd0;
+                        bbox_height <= 9'd0;
                         canvas_empty <= 1'b1;
                     end
                     
@@ -329,9 +341,9 @@ module shape_recognizer (
     reg [2:0] classify_stage;
     
     // Latched feature inputs
-    reg [16:0] pixel_count_latched;
-    reg [9:0]  bbox_width_latched;
-    reg [9:0]  bbox_height_latched;
+    reg [14:0] pixel_count_latched;
+    reg [8:0]  bbox_width_latched;
+    reg [8:0]  bbox_height_latched;
     reg        canvas_empty_latched;
     
     // Derived metrics (32-bit)
@@ -355,9 +367,9 @@ module shape_recognizer (
             detected_shape <= SHAPE_NONE;
             confidence <= 8'd0;
             recognition_done <= 1'b0;
-            pixel_count_latched <= 17'd0;
-            bbox_width_latched <= 10'd0;
-            bbox_height_latched <= 10'd0;
+            pixel_count_latched <= 15'd0;
+            bbox_width_latched <= 9'd0;
+            bbox_height_latched <= 9'd0;
             canvas_empty_latched <= 1'b1;
             bbox_area <= 32'd0;
             fill_ratio_num <= 32'd0;
