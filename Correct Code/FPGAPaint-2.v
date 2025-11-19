@@ -76,8 +76,8 @@ assign drawing_active = drawing_enabled && mouse_left_button;
 // ============================================
 // Shape recognizer interface signals
 wire        sr_draw_en;
-wire [7:0]  sr_draw_x;
-wire [6:0]  sr_draw_y;
+wire [8:0]  sr_draw_x;  // Must match shape_recognizer port (9 bits)
+wire [7:0]  sr_draw_y;  // Must match shape_recognizer port (8 bits)
 wire        sr_draw_pixel_on;
 wire        sr_clear_canvas;
 wire        sr_start_recognition;
@@ -102,7 +102,7 @@ assign start_recognition_pulse = SW[1] && !sw1_prev;
 
 // Connect shape recognizer signals
 assign sr_draw_en = vga_write && !clearing_active;  // Only during normal drawing
-assign sr_draw_x = mouse_x_pos[8:1];  // Scale from 320 to 160 by dividing by 2
+assign sr_draw_x = {1'b0, mouse_x_pos[8:1]};  // Scale from 320 to 160 (9-bit result with leading 0)
 assign sr_draw_y = mouse_y_pos[7:1];  // Scale from 240 to 120 by dividing by 2
 // draw_pixel_on: 1 when drawing black pixels (left button with black pen), 0 when erasing
 assign sr_draw_pixel_on = (mouse_left_button) ? ~SW[9] : 1'b0;

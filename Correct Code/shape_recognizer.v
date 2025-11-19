@@ -130,7 +130,7 @@ module shape_recognizer (
                     // Handle clear request
                     if (clear_canvas && !clearing_active) begin
                         clearing_active <= 1'b1;
-                        clear_addr <= 17'd0;
+                        clear_addr <= 15'd0;
                     end
                     
                     // Handle recognition start
@@ -183,13 +183,13 @@ module shape_recognizer (
     wire [14:0] draw_addr;
     wire [14:0] scan_addr;
     
-    // Scale coordinates from 320x240 to 160x120 by dividing by 2
-    assign draw_addr = ((draw_y >> 1) * 8'd160) + (draw_x >> 1);
+    // Coordinates are already scaled in top module (320x240 → 160x120)
+    assign draw_addr = (draw_y * 9'd160) + draw_x;
     
     // Scan address computation
     reg [7:0] scan_x;
     reg [6:0] scan_y;
-    assign scan_addr = (scan_y * 8'd160) + scan_x;
+    assign scan_addr = (scan_y * 9'd160) + scan_x;
     
     // Arbiter - single driver for mem_addr, mem_write_en, mem_write_data
     always @(posedge clk) begin
