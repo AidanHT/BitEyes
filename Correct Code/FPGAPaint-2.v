@@ -72,6 +72,44 @@ wire drawing_active;
 assign drawing_active = drawing_enabled && mouse_left_button;
 
 // ============================================
+// SHAPE RECOGNIZER SIGNALS
+// ============================================
+// Shape recognizer interface signals
+wire        sr_draw_en;
+wire [8:0]  sr_draw_x;
+wire [7:0]  sr_draw_y;
+wire        sr_draw_pixel_on;
+wire        sr_clear_canvas;
+wire        sr_start_recognition;
+wire        sr_busy;
+wire        sr_recognition_done;
+wire [2:0]  sr_detected_shape;
+wire [7:0]  sr_confidence;
+
+// Edge detector for SW[1] trigger
+reg sw1_prev;
+wire start_recognition_pulse;
+
+always @(posedge CLOCK_50) begin
+	if (reset) begin
+		sw1_prev <= 1'b0;
+	end else begin
+		sw1_prev <= SW[1];
+	end
+end
+
+assign start_recognition_pulse = SW[1] && !sw1_prev;
+
+// Connect shape recognizer signals
+assign sr_draw_en = vga_write && !clearing_active;  // Only during normal drawing
+assign sr_draw_x = mouse_x_pos;
+assign sr_draw_y = mouse_y_pos;
+// draw_pixel_on: 1 when drawing black pixels (left button with black pen), 0 when erasing
+assign sr_draw_pixel_on = (mouse_left_button) ? ~SW[9] : 1'b0;
+assign sr_clear_canvas = reset;  // Clear shape buffer on reset
+assign sr_start_recognition = start_recognition_pulse;
+
+// ============================================
 // SCREEN CLEARING STATE MACHINE
 // ============================================
 // States for the clearing process
@@ -314,78 +352,132 @@ vga_adapter #(
 	.VGA_CLK(VGA_CLK)
 );
 
+// Shape Recognizer instance
+shape_recognizer shape_recognizer_inst (
+	.clk(CLOCK_50),
+	.reset_n(~reset),
+	.draw_en(sr_draw_en),
+	.draw_x(sr_draw_x),
+	.draw_y(sr_draw_y),
+	.draw_pixel_on(sr_draw_pixel_on),
+	.clear_canvas(sr_clear_canvas),
+	.start_recognition(sr_start_recognition),
+	.busy(sr_busy),
+	.recognition_done(sr_recognition_done),
+	.detected_shape(sr_detected_shape),
+	.confidence(sr_confidence)
+);
+
 // Display status on LEDs
-assign LEDR[0] = drawing_enabled; // LED[0] = drawing mode enabled
-assign LEDR[1] = mouse_right_button; // LED[1] = right mouse button
-assign LEDR[2] = mouse_left_button; // LED[2] = left mouse button
-assign LEDR[3] = move_right_latched;
-assign LEDR[4] = move_left_latched; // LED[4] = mouse moving left (latched)
-assign LEDR[5] = move_up_latched; // LED[5] = mouse moving up (latched)
-assign LEDR[6] = move_down_latched; // LED[6] = mouse moving down (latched)
-assign LEDR[7] = drawing_active; // LED[7] = currently drawing
-assign LEDR[8] = clearing_active; // LED[8] = currently clearing screen
-assign LEDR[9] = 1'b0; // LED[9] = unused
+assign LEDR[0] = drawing_enabled;      // LED[0] = drawing mode enabled
+assign LEDR[1] = SW[1];                // LED[1] = shape recognition switch
+assign LEDR[2] = mouse_left_button;    // LED[2] = left mouse button
+assign LEDR[3] = mouse_right_button;   // LED[3] = right mouse button
+assign LEDR[4] = drawing_active;       // LED[4] = currently drawing
+assign LEDR[5] = clearing_active;      // LED[5] = currently clearing screen
+assign LEDR[6] = sr_busy;              // LED[6] = shape recognizer busy
+assign LEDR[7] = sr_recognition_done;  // LED[7] = recognition complete pulse
+assign LEDR[8] = sr_detected_shape[0]; // LED[8-9] = detected shape (binary)
+assign LEDR[9] = sr_detected_shape[1];
 
 // ============================================================================
-// HEX DISPLAY TESTING CODE - DELETE THIS ENTIRE SECTION AFTER TESTING
+// SHAPE RECOGNIZER HEX DISPLAY
 // ============================================================================
-// Displays mouse delta values in base 10 (decimal):
-//   HEX5-HEX3: delta_x magnitude (0-255)
-//   HEX2-HEX0: delta_y magnitude (0-255)
+// HEX5: Detected shape (blank, A, b, C, d)
+// HEX4: Blank
+// HEX3: Blank  
+// HEX2-HEX0: Confidence value (0-255) in decimal
 // ============================================================================
 
-// Extract magnitude from delta values - use corrected deltas which already account for sign
-wire [7:0] delta_x_magnitude;
-wire [7:0] delta_y_magnitude;
-assign delta_x_magnitude = corrected_delta_x;
-assign delta_y_magnitude = corrected_delta_y;
-
-// Convert binary to BCD for delta_x (3 digits: hundreds, tens, ones)
-reg [3:0] delta_x_hundreds;
-reg [3:0] delta_x_tens;
-reg [3:0] delta_x_ones;
-
-// Convert binary to BCD for delta_y (3 digits: hundreds, tens, ones)
-reg [3:0] delta_y_hundreds;
-reg [3:0] delta_y_tens;
-reg [3:0] delta_y_ones;
-
-// Binary to BCD conversion for delta_x
+// Shape to 7-segment decoder
+reg [6:0] shape_hex;
 always @(*) begin
-	if (delta_x_magnitude >= 200) begin
-		delta_x_hundreds = 4'd2;
-		delta_x_tens = (delta_x_magnitude - 200) / 10;
-		delta_x_ones = (delta_x_magnitude - 200) % 10;
+	case (sr_detected_shape)
+		3'd0: shape_hex = 7'b1111111; // blank for NONE
+		3'd1: shape_hex = 7'b0001000; // A for RECTANGLE
+		3'd2: shape_hex = 7'b0000011; // b for SQUARE
+		3'd3: shape_hex = 7'b1000110; // C for TRIANGLE
+		3'd4: shape_hex = 7'b0100001; // d for CIRCLE
+		default: shape_hex = 7'b1111111; // blank
+	endcase
+end
+
+assign HEX5 = shape_hex;
+assign HEX4 = 7'b1111111; // blank
+assign HEX3 = 7'b1111111; // blank
+
+// Convert confidence (0-255) to BCD (3 digits: hundreds, tens, ones)
+reg [3:0] conf_hundreds;
+reg [3:0] conf_tens;
+reg [3:0] conf_ones;
+
+always @(*) begin
+	if (sr_confidence >= 200) begin
+		conf_hundreds = 4'd2;
+		conf_tens = (sr_confidence - 200) / 10;
+		conf_ones = (sr_confidence - 200) % 10;
 	end
-	else if (delta_x_magnitude >= 100) begin
-		delta_x_hundreds = 4'd1;
-		delta_x_tens = (delta_x_magnitude - 100) / 10;
-		delta_x_ones = (delta_x_magnitude - 100) % 10;
+	else if (sr_confidence >= 100) begin
+		conf_hundreds = 4'd1;
+		conf_tens = (sr_confidence - 100) / 10;
+		conf_ones = (sr_confidence - 100) % 10;
 	end
 	else begin
-		delta_x_hundreds = 4'd0;
-		delta_x_tens = delta_x_magnitude / 10;
-		delta_x_ones = delta_x_magnitude % 10;
+		conf_hundreds = 4'd0;
+		conf_tens = sr_confidence / 10;
+		conf_ones = sr_confidence % 10;
 	end
 end
 
-// Binary to BCD conversion for delta_y
+// Convert BCD digits to 7-segment (using simple decoder)
+reg [6:0] hex2_display;
+reg [6:0] hex1_display;
+reg [6:0] hex0_display;
+
+// 7-segment decoder for digits 0-9
 always @(*) begin
-	if (delta_y_magnitude >= 200) begin
-		delta_y_hundreds = 4'd2;
-		delta_y_tens = (delta_y_magnitude - 200) / 10;
-		delta_y_ones = (delta_y_magnitude - 200) % 10;
-	end
-	else if (delta_y_magnitude >= 100) begin
-		delta_y_hundreds = 4'd1;
-		delta_y_tens = (delta_y_magnitude - 100) / 10;
-		delta_y_ones = (delta_y_magnitude - 100) % 10;
-	end
-	else begin
-		delta_y_hundreds = 4'd0;
-		delta_y_tens = delta_y_magnitude / 10;
-		delta_y_ones = delta_y_magnitude % 10;
-	end
+	case (conf_hundreds)
+		4'd0: hex2_display = 7'b1000000; // 0
+		4'd1: hex2_display = 7'b1111001; // 1
+		4'd2: hex2_display = 7'b0100100; // 2
+		default: hex2_display = 7'b1111111; // blank
+	endcase
 end
+
+always @(*) begin
+	case (conf_tens)
+		4'd0: hex1_display = 7'b1000000; // 0
+		4'd1: hex1_display = 7'b1111001; // 1
+		4'd2: hex1_display = 7'b0100100; // 2
+		4'd3: hex1_display = 7'b0110000; // 3
+		4'd4: hex1_display = 7'b0011001; // 4
+		4'd5: hex1_display = 7'b0010010; // 5
+		4'd6: hex1_display = 7'b0000010; // 6
+		4'd7: hex1_display = 7'b1111000; // 7
+		4'd8: hex1_display = 7'b0000000; // 8
+		4'd9: hex1_display = 7'b0010000; // 9
+		default: hex1_display = 7'b1111111; // blank
+	endcase
+end
+
+always @(*) begin
+	case (conf_ones)
+		4'd0: hex0_display = 7'b1000000; // 0
+		4'd1: hex0_display = 7'b1111001; // 1
+		4'd2: hex0_display = 7'b0100100; // 2
+		4'd3: hex0_display = 7'b0110000; // 3
+		4'd4: hex0_display = 7'b0011001; // 4
+		4'd5: hex0_display = 7'b0010010; // 5
+		4'd6: hex0_display = 7'b0000010; // 6
+		4'd7: hex0_display = 7'b1111000; // 7
+		4'd8: hex0_display = 7'b0000000; // 8
+		4'd9: hex0_display = 7'b0010000; // 9
+		default: hex0_display = 7'b1111111; // blank
+	endcase
+end
+
+assign HEX2 = hex2_display;
+assign HEX1 = hex1_display;
+assign HEX0 = hex0_display;
 
 endmodule
