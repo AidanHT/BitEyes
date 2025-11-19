@@ -481,11 +481,11 @@ module shape_recognizer (
                     // OUTLINE-BASED CLASSIFICATION using compactness metric
                     // Compactness = (4π × area) / perimeter² (scaled, where perfect circle = ~256)
                     // 
-                    // Expected compactness values for OUTLINE shapes (adjusted for hand-drawn tolerance):
-                    // Circle:    ~180-290 (most compact, ideal ~256)
-                    // Square:    ~130-240 (ideal ~201)
-                    // Rectangle: ~90-210  (varies with aspect, ideal 120-180)
-                    // Triangle:  ~50-190  (least compact, ideal ~155 for equilateral)
+                    // CORRECTED compactness ranges for OUTLINE shapes (non-overlapping):
+                    // Circle:    >= 210    (most compact, ideal ~256, range 210-300+)
+                    // Square:    140-209   (ideal ~201)
+                    // Rectangle: 80-179    (varies with aspect, ideal 120-150)
+                    // Triangle:  40-159    (least compact, ideal ~100-130 for equilateral)
                     //
                     // High tolerance (30%+) accounts for:
                     // - Disconnected pixels (gaps in outline)
@@ -503,10 +503,11 @@ module shape_recognizer (
                     
                     // Determine shape characteristics based on compactness
                     // Adjusted for hand-drawn imperfections (disconnected pixels increase perimeter, lowering compactness)
-                    is_circle_like    <= (compactness >= 32'd180);               // Very high compactness
-                    is_square_like    <= (compactness >= 32'd130 && compactness < 32'd240); // High compactness
-                    is_rectangle_like <= (compactness >= 32'd90  && compactness < 32'd210); // Medium compactness
-                    is_triangle_like  <= (compactness >= 32'd50  && compactness < 32'd190); // Lower compactness
+                    // Ranges are set with minimal overlap to avoid misclassification
+                    is_circle_like    <= (compactness >= 32'd210);               // Very high compactness, circles only
+                    is_square_like    <= (compactness >= 32'd140 && compactness < 32'd210); // High compactness
+                    is_rectangle_like <= (compactness >= 32'd80  && compactness < 32'd180); // Medium compactness
+                    is_triangle_like  <= (compactness >= 32'd40  && compactness < 32'd160); // Lower compactness
                     
                     // CLASSIFICATION LOGIC - Priority: Circle > Square > Rectangle > Triangle
                     // Note: Shapes should be distinct but allow overlap for robustness
@@ -516,55 +517,55 @@ module shape_recognizer (
                         detected_shape <= SHAPE_CIRCLE;
                         // Confidence based on how close to ideal circle (256)
                         // Adjusted for hand-drawn tolerance
-                        if (compactness >= 32'd230 && compactness <= 32'd280)
+                        if (compactness >= 32'd240 && compactness <= 32'd270)
                             confidence <= 8'd210;  // Very close to ideal
-                        else if (compactness >= 32'd200 && compactness <= 32'd290)
+                        else if (compactness >= 32'd220 && compactness <= 32'd290)
                             confidence <= 8'd190;  // Good circle
-                        else if (compactness >= 32'd180)
+                        else if (compactness >= 32'd210)
                             confidence <= 8'd170;  // Acceptable circle
                         else
-                            confidence <= 8'd150;  // Rough circle
+                            confidence <= 8'd150;  // Should not reach here
                     end
                     else if (is_square_like && is_square_aspect) begin
                         // SQUARE: Medium-high compactness + square aspect ratio
                         detected_shape <= SHAPE_SQUARE;
                         // Confidence based on how close to ideal square (201)
                         // Adjusted for hand-drawn tolerance
-                        if (compactness >= 32'd180 && compactness <= 32'd220)
+                        if (compactness >= 32'd190 && compactness <= 32'd210)
                             confidence <= 8'd200;  // Very close to ideal
-                        else if (compactness >= 32'd150 && compactness <= 32'd240)
+                        else if (compactness >= 32'd165 && compactness < 32'd220)
                             confidence <= 8'd180;  // Good square
                         else
-                            confidence <= 8'd160;  // Acceptable square
+                            confidence <= 8'd160;  // Acceptable square (140-164)
                     end
                     else if (is_rectangle_like && !is_square_aspect) begin
                         // RECTANGLE: Medium compactness + elongated aspect ratio
                         detected_shape <= SHAPE_RECTANGLE;
                         // Confidence based on aspect ratio and compactness
                         // Adjusted for hand-drawn tolerance
-                        if (compactness >= 32'd110 && compactness <= 32'd180)
-                            confidence <= 8'd190;  // Good rectangle
-                        else if (compactness >= 32'd90 && compactness <= 32'd210)
+                        if (compactness >= 32'd110 && compactness <= 32'd150)
+                            confidence <= 8'd190;  // Good rectangle (ideal range)
+                        else if (compactness >= 32'd90 && compactness < 32'd180)
                             confidence <= 8'd170;  // Acceptable rectangle
                         else
-                            confidence <= 8'd150;  // Rough rectangle
+                            confidence <= 8'd150;  // Rough rectangle (80-89)
                     end
                     else if (is_triangle_like) begin
                         // TRIANGLE: Lower compactness (catches remaining shapes)
                         detected_shape <= SHAPE_TRIANGLE;
                         // Confidence based on compactness
                         // Adjusted for hand-drawn tolerance
-                        if (compactness >= 32'd110 && compactness <= 32'd165)
+                        if (compactness >= 32'd90 && compactness <= 32'd140)
                             confidence <= 8'd180;  // Good triangle (equilateral-like)
-                        else if (compactness >= 32'd80 && compactness <= 32'd190)
+                        else if (compactness >= 32'd60 && compactness < 32'd160)
                             confidence <= 8'd160;  // Acceptable triangle
-                        else if (compactness >= 32'd50)
+                        else if (compactness >= 32'd40)
                             confidence <= 8'd140;  // Rough triangle (very elongated or irregular)
                         else
                             confidence <= 8'd120;  // Very rough
                     end
-                    else if (compactness >= 32'd130 && !is_square_aspect) begin
-                        // Edge case: High compactness but elongated -> likely rectangle
+                    else if (compactness >= 32'd140 && !is_square_aspect) begin
+                        // Edge case: Square-like compactness but elongated -> likely rectangle
                         detected_shape <= SHAPE_RECTANGLE;
                         confidence <= 8'd150;
                     end
