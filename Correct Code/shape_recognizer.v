@@ -228,6 +228,7 @@ module shape_recognizer (
     // =========================================================
     reg [2:0] fe_state;
     reg [14:0] pixel_count;
+    reg [14:0] perimeter_count;  // Count of edge/perimeter pixels
     reg [7:0] bbox_min_x, bbox_max_x;
     reg [6:0] bbox_min_y, bbox_max_y;
     reg [8:0] bbox_width, bbox_height;
@@ -236,6 +237,9 @@ module shape_recognizer (
     // Signal to classifier that FE is done
     reg fe_done_flag;
     
+    // Temporary storage for neighbor checking during scan
+    reg [8:0] neighbor_read_pixels;  // Buffer for reading adjacent pixels
+    
     // Feature extraction FSM
     always @(posedge clk) begin
         if (!reset_n) begin
@@ -243,6 +247,7 @@ module shape_recognizer (
             scan_x <= 8'd0;
             scan_y <= 7'd0;
             pixel_count <= 15'd0;
+            perimeter_count <= 15'd0;
             bbox_min_x <= 8'd159;
             bbox_max_x <= 8'd0;
             bbox_min_y <= 7'd119;
@@ -251,6 +256,7 @@ module shape_recognizer (
             bbox_height <= 9'd0;
             canvas_empty <= 1'b1;
             fe_done_flag <= 1'b0;
+            neighbor_read_pixels <= 9'd0;
         end else begin
             // Default
             fe_done_flag <= 1'b0;
@@ -267,11 +273,13 @@ module shape_recognizer (
                     scan_x <= 8'd0;
                     scan_y <= 7'd0;
                     pixel_count <= 15'd0;
+                    perimeter_count <= 15'd0;
                     bbox_min_x <= 8'd159;
                     bbox_max_x <= 8'd0;
                     bbox_min_y <= 7'd119;
                     bbox_max_y <= 7'd0;
                     canvas_empty <= 1'b0;
+                    neighbor_read_pixels <= 9'd0;
                     fe_state <= FE_SCAN_ADDR;
                 end
                 
@@ -290,6 +298,18 @@ module shape_recognizer (
                     // Process the read data
                     if (mem_read_data == 1'b1) begin
                         pixel_count <= pixel_count + 15'd1;
+                        
+                        // For outline shapes, consider edge detection
+                        // A pixel is on perimeter if it's at boundary OR isolated
+                        // Simple heuristic: for hand-drawn outlines, all pixels contribute to perimeter
+                        // More sophisticated: check if at edge of bounding box or has empty neighbors
+                        
+                        // Count as perimeter pixel if:
+                        // 1. At edge of scan area, OR
+                        // 2. Near bounding box edge (within 2 pixels), OR
+                        // 3. All drawn pixels (for outline shapes, this is most accurate)
+                        // Using option 3 for outline detection: perimeter ≈ pixel_count
+                        perimeter_count <= perimeter_count + 15'd1;
                         
                         // Update bounding box
                         if (scan_x < bbox_min_x) bbox_min_x <= scan_x;
@@ -316,7 +336,8 @@ module shape_recognizer (
                 
                 FE_DONE: begin
                     // Compute final dimensions
-                    if (pixel_count != 15'd0) begin
+                    // Minimum pixel count threshold to ignore noise (20 pixels)
+                    if (pixel_count >= 15'd20) begin
                         bbox_width  <= (bbox_max_x - bbox_min_x) + 9'd1;
                         bbox_height <= (bbox_max_y - bbox_min_y) + 9'd1;
                         canvas_empty <= 1'b0;
@@ -342,23 +363,26 @@ module shape_recognizer (
     
     // Latched feature inputs
     reg [14:0] pixel_count_latched;
+    reg [14:0] perimeter_count_latched;
     reg [8:0]  bbox_width_latched;
     reg [8:0]  bbox_height_latched;
     reg        canvas_empty_latched;
     
     // Derived metrics (32-bit)
     reg [31:0] bbox_area;
-    reg [31:0] fill_ratio_num;      // pixel_count << scale
-    reg [31:0] aspect_ratio_num;    // width << scale
-    reg [31:0] aspect_ratio_den;    // height
+    reg [31:0] perimeter_squared;    // perimeter²
+    reg [31:0] compactness;          // (4π × area) / perimeter² (scaled by 256)
+    reg [31:0] perimeter_area_ratio; // perimeter² / area
+    reg [31:0] aspect_ratio_num;     // width << scale
+    reg [31:0] aspect_ratio_den;     // height
     
     // Intermediate classification signals
-    reg [31:0] fill_ratio_scaled;   // (pixel_count << 16) / bbox_area
     reg [31:0] aspect_diff;
     reg is_square_aspect;
-    reg is_high_fill;
-    reg is_medium_fill;
-    reg is_low_fill;
+    reg is_circle_like;
+    reg is_square_like;
+    reg is_rectangle_like;
+    reg is_triangle_like;
     
     // Classification pipeline - SINGLE DRIVER for detected_shape, confidence, recognition_done
     always @(posedge clk) begin
@@ -368,19 +392,22 @@ module shape_recognizer (
             confidence <= 8'd0;
             recognition_done <= 1'b0;
             pixel_count_latched <= 15'd0;
+            perimeter_count_latched <= 15'd0;
             bbox_width_latched <= 9'd0;
             bbox_height_latched <= 9'd0;
             canvas_empty_latched <= 1'b1;
             bbox_area <= 32'd0;
-            fill_ratio_num <= 32'd0;
+            perimeter_squared <= 32'd0;
+            compactness <= 32'd0;
+            perimeter_area_ratio <= 32'd0;
             aspect_ratio_num <= 32'd0;
             aspect_ratio_den <= 32'd0;
-            fill_ratio_scaled <= 32'd0;
             aspect_diff <= 32'd0;
             is_square_aspect <= 1'b0;
-            is_high_fill <= 1'b0;
-            is_medium_fill <= 1'b0;
-            is_low_fill <= 1'b0;
+            is_circle_like <= 1'b0;
+            is_square_like <= 1'b0;
+            is_rectangle_like <= 1'b0;
+            is_triangle_like <= 1'b0;
         end else begin
             // Default: clear recognition_done pulse
             recognition_done <= 1'b0;
@@ -395,6 +422,7 @@ module shape_recognizer (
                 CL_LATCH: begin
                     // Latch feature extraction outputs
                     pixel_count_latched <= pixel_count;
+                    perimeter_count_latched <= perimeter_count;
                     bbox_width_latched <= bbox_width;
                     bbox_height_latched <= bbox_height;
                     canvas_empty_latched <= canvas_empty;
@@ -417,20 +445,27 @@ module shape_recognizer (
                 end
                 
                 CL_CALC_RATIOS: begin
-                    // Compute fill ratio (scaled by 256 for fixed-point)
-                    // fill_ratio = (pixel_count << 8) / bbox_area
-                    fill_ratio_num <= {pixel_count_latched, 8'd0};  // pixel_count << 8
+                    // Calculate perimeter squared
+                    perimeter_squared <= perimeter_count_latched * perimeter_count_latched;
+                    
+                    // Calculate compactness = (4π × area) / perimeter² (scaled by 256)
+                    // Using π ≈ 3.14159 ≈ 804/256, so 4π ≈ 3217/256
+                    // compactness_scaled = (3217 × bbox_area) / perimeter²
+                    if (perimeter_count_latched != 15'd0) begin
+                        // Compute (4π × area × 256) / perimeter²
+                        // = (3217 × area) / perimeter²
+                        compactness <= (32'd3217 * bbox_area) / (perimeter_count_latched * perimeter_count_latched);
+                        
+                        // Calculate perimeter²/area ratio (scaled by 256)
+                        perimeter_area_ratio <= ((perimeter_count_latched * perimeter_count_latched) << 8) / bbox_area;
+                    end else begin
+                        compactness <= 32'd0;
+                        perimeter_area_ratio <= 32'd0;
+                    end
                     
                     // Compute aspect ratio components
                     aspect_ratio_num <= {22'd0, bbox_width_latched};
                     aspect_ratio_den <= {22'd0, bbox_height_latched};
-                    
-                    // Calculate fill_ratio_scaled
-                    if (bbox_area != 32'd0) begin
-                        fill_ratio_scaled <= ({pixel_count_latched, 8'd0}) / bbox_area;
-                    end else begin
-                        fill_ratio_scaled <= 32'd0;
-                    end
                     
                     // Calculate aspect difference
                     if (bbox_width_latched > bbox_height_latched) begin
@@ -443,69 +478,98 @@ module shape_recognizer (
                 end
                 
                 CL_CLASSIFY: begin
-                    // Thresholds (scaled by 256):
-                    // fill_ratio > 0.75 => 192
-                    // fill_ratio 0.3-0.6 => 77-154
-                    // aspect_ratio ~1.0 => diff < 10% of dimension
+                    // OUTLINE-BASED CLASSIFICATION using compactness metric
+                    // Compactness = (4π × area) / perimeter² (scaled, where perfect circle = ~256)
+                    // 
+                    // Expected compactness values for OUTLINE shapes (adjusted for hand-drawn tolerance):
+                    // Circle:    ~180-290 (most compact, ideal ~256)
+                    // Square:    ~130-240 (ideal ~201)
+                    // Rectangle: ~90-210  (varies with aspect, ideal 120-180)
+                    // Triangle:  ~50-190  (least compact, ideal ~155 for equilateral)
+                    //
+                    // High tolerance (30%+) accounts for:
+                    // - Disconnected pixels (gaps in outline)
+                    // - Wobbly/irregular lines
+                    // - Imperfect corners and curves
+                    // - Over-counted perimeter from hand-drawn imperfections
                     
-                    // Determine aspect characteristics
-                    // Square aspect: difference less than 10% of smaller dimension
+                    // Determine aspect characteristics with HIGH tolerance (30%)
+                    // Square aspect: difference less than 30% of smaller dimension
                     if (bbox_width_latched < bbox_height_latched) begin
-                        is_square_aspect <= (aspect_diff < (bbox_width_latched >> 3)); // < 12.5%
+                        is_square_aspect <= (aspect_diff < ((bbox_width_latched * 32'd3) / 32'd10)); // < 30%
                     end else begin
-                        is_square_aspect <= (aspect_diff < (bbox_height_latched >> 3)); // < 12.5%
+                        is_square_aspect <= (aspect_diff < ((bbox_height_latched * 32'd3) / 32'd10)); // < 30%
                     end
                     
-                    // Determine fill characteristics
-                    is_high_fill <= (fill_ratio_scaled >= 32'd192);    // >= 0.75
-                    is_medium_fill <= (fill_ratio_scaled >= 32'd77 && fill_ratio_scaled < 32'd192); // 0.3-0.75
-                    is_low_fill <= (fill_ratio_scaled < 32'd77);       // < 0.3
+                    // Determine shape characteristics based on compactness
+                    // Adjusted for hand-drawn imperfections (disconnected pixels increase perimeter, lowering compactness)
+                    is_circle_like    <= (compactness >= 32'd180);               // Very high compactness
+                    is_square_like    <= (compactness >= 32'd130 && compactness < 32'd240); // High compactness
+                    is_rectangle_like <= (compactness >= 32'd90  && compactness < 32'd210); // Medium compactness
+                    is_triangle_like  <= (compactness >= 32'd50  && compactness < 32'd190); // Lower compactness
                     
-                    // Classification logic
-                    if (is_high_fill && is_square_aspect) begin
-                        // Square: high fill + square aspect
-                        detected_shape <= SHAPE_SQUARE;
-                        // Confidence based on how close to ideal
-                        if (fill_ratio_scaled >= 32'd230) // > 0.9
-                            confidence <= 8'd255;
-                        else if (fill_ratio_scaled >= 32'd204) // > 0.8
-                            confidence <= 8'd220;
-                        else
-                            confidence <= 8'd180;
-                    end
-                    else if (is_high_fill && !is_square_aspect) begin
-                        // Rectangle: high fill + elongated aspect
-                        detected_shape <= SHAPE_RECTANGLE;
-                        if (fill_ratio_scaled >= 32'd230) // > 0.9
-                            confidence <= 8'd255;
-                        else if (fill_ratio_scaled >= 32'd204) // > 0.8
-                            confidence <= 8'd220;
-                        else
-                            confidence <= 8'd180;
-                    end
-                    else if (is_square_aspect && fill_ratio_scaled >= 32'd170 && fill_ratio_scaled < 32'd220) begin
-                        // Circle: square aspect + fill ratio around 0.67-0.86 (π/4 ≈ 0.785)
+                    // CLASSIFICATION LOGIC - Priority: Circle > Square > Rectangle > Triangle
+                    // Note: Shapes should be distinct but allow overlap for robustness
+                    
+                    if (is_circle_like && is_square_aspect) begin
+                        // CIRCLE: High compactness + square aspect ratio
                         detected_shape <= SHAPE_CIRCLE;
-                        // Higher confidence if closer to π/4 (≈ 201 in our scale)
-                        if (fill_ratio_scaled >= 32'd190 && fill_ratio_scaled <= 32'd210)
-                            confidence <= 8'd240;
-                        else if (fill_ratio_scaled >= 32'd180 && fill_ratio_scaled <= 32'd220)
-                            confidence <= 8'd200;
+                        // Confidence based on how close to ideal circle (256)
+                        // Adjusted for hand-drawn tolerance
+                        if (compactness >= 32'd230 && compactness <= 32'd280)
+                            confidence <= 8'd210;  // Very close to ideal
+                        else if (compactness >= 32'd200 && compactness <= 32'd290)
+                            confidence <= 8'd190;  // Good circle
+                        else if (compactness >= 32'd180)
+                            confidence <= 8'd170;  // Acceptable circle
                         else
-                            confidence <= 8'd160;
+                            confidence <= 8'd150;  // Rough circle
                     end
-                    else if (is_medium_fill || is_low_fill) begin
-                        // Triangle: lower fill ratio
-                        detected_shape <= SHAPE_TRIANGLE;
-                        if (fill_ratio_scaled >= 32'd102 && fill_ratio_scaled <= 32'd140) // 0.4-0.55
-                            confidence <= 8'd200;
-                        else if (fill_ratio_scaled >= 32'd77 && fill_ratio_scaled <= 32'd154) // 0.3-0.6
-                            confidence <= 8'd160;
+                    else if (is_square_like && is_square_aspect) begin
+                        // SQUARE: Medium-high compactness + square aspect ratio
+                        detected_shape <= SHAPE_SQUARE;
+                        // Confidence based on how close to ideal square (201)
+                        // Adjusted for hand-drawn tolerance
+                        if (compactness >= 32'd180 && compactness <= 32'd220)
+                            confidence <= 8'd200;  // Very close to ideal
+                        else if (compactness >= 32'd150 && compactness <= 32'd240)
+                            confidence <= 8'd180;  // Good square
                         else
-                            confidence <= 8'd120;
+                            confidence <= 8'd160;  // Acceptable square
+                    end
+                    else if (is_rectangle_like && !is_square_aspect) begin
+                        // RECTANGLE: Medium compactness + elongated aspect ratio
+                        detected_shape <= SHAPE_RECTANGLE;
+                        // Confidence based on aspect ratio and compactness
+                        // Adjusted for hand-drawn tolerance
+                        if (compactness >= 32'd110 && compactness <= 32'd180)
+                            confidence <= 8'd190;  // Good rectangle
+                        else if (compactness >= 32'd90 && compactness <= 32'd210)
+                            confidence <= 8'd170;  // Acceptable rectangle
+                        else
+                            confidence <= 8'd150;  // Rough rectangle
+                    end
+                    else if (is_triangle_like) begin
+                        // TRIANGLE: Lower compactness (catches remaining shapes)
+                        detected_shape <= SHAPE_TRIANGLE;
+                        // Confidence based on compactness
+                        // Adjusted for hand-drawn tolerance
+                        if (compactness >= 32'd110 && compactness <= 32'd165)
+                            confidence <= 8'd180;  // Good triangle (equilateral-like)
+                        else if (compactness >= 32'd80 && compactness <= 32'd190)
+                            confidence <= 8'd160;  // Acceptable triangle
+                        else if (compactness >= 32'd50)
+                            confidence <= 8'd140;  // Rough triangle (very elongated or irregular)
+                        else
+                            confidence <= 8'd120;  // Very rough
+                    end
+                    else if (compactness >= 32'd130 && !is_square_aspect) begin
+                        // Edge case: High compactness but elongated -> likely rectangle
+                        detected_shape <= SHAPE_RECTANGLE;
+                        confidence <= 8'd150;
                     end
                     else begin
-                        // Unrecognized
+                        // Unrecognized or too irregular
                         detected_shape <= SHAPE_NONE;
                         confidence <= 8'd0;
                     end
