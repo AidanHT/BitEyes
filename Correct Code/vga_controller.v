@@ -6,13 +6,15 @@
  * read from video memory its brightness is first increased before it is forwarded to the VGA DAC.
  */
 module vga_controller(vga_clock, resetn, pixel_color, memory_address, 
+		// Overlay cursor inputs
+		overlay_enable, overlay_x, overlay_y, overlay_color,
 		VGA_R, VGA_G, VGA_B,
 		VGA_HS, VGA_VS, VGA_BLANK_N,
 		VGA_SYNC_N, VGA_CLK);
 	
     // The VGA resolution, which can be set to "640x480", "320x240", and "160x120"
     parameter RESOLUTION = "160x120";
-	 parameter COLOR_DEPTH = 3;          // color depth for the video memory
+	parameter COLOR_DEPTH = 3;          // color depth for the video memory
     parameter nX = 8, nY = 7, Mn = 15;  // default bit widths
     parameter COLS = 160, ROWS = 120;   // default COLS x ROWS memory
     // See video adaptor for descriptions of the above parameters
@@ -37,6 +39,13 @@ module vga_controller(vga_clock, resetn, pixel_color, memory_address,
 	
 	input wire vga_clock, resetn;
 	input wire [COLOR_DEPTH-1:0] pixel_color;
+
+	// Overlay cursor control
+	input wire overlay_enable;
+	input wire [nX-1:0] overlay_x;
+	input wire [nY-1:0] overlay_y;
+	input wire [COLOR_DEPTH-1:0] overlay_color;
+
 	output wire [Mn-1:0] memory_address;
 	output reg [7:0] VGA_R;
 	output reg [7:0] VGA_G;
@@ -147,10 +156,16 @@ module vga_controller(vga_clock, resetn, pixel_color, memory_address,
 	
 	wire on_screen;
 	
+	// Overlay cursor: 5x5 crosshair centered at (overlay_x,overlay_y)
+	wire [nX:0] dx = (overlay_x >= x) ? (overlay_x - x) : (x - overlay_x);
+	wire [nY:0] dy = (overlay_y >= y) ? (overlay_y - y) : (y - overlay_y);
+	wire on_crosshair = ((dx <= 3'd2) && (y == overlay_y)) || ((dy <= 3'd2) && (x == overlay_x));
+	wire [COLOR_DEPTH-1:0] pixel_color_eff = (overlay_enable && on_crosshair) ? overlay_color : pixel_color;
+	
 	assign on_screen = (({1'b0, xCounter} >= 0) & ({1'b0, xCounter} < C_HORZ_NUM_PIXELS+2) &
                        ({1'b0, yCounter} < C_VERT_NUM_PIXELS));
 	
-	always @(pixel_color or on_screen)
+	always @(*)  // use full sensitivity for overlay to respond immediately
 	begin		
 		VGA_R <= 'b0;
 		VGA_G <= 'b0;
@@ -159,9 +174,9 @@ module vga_controller(vga_clock, resetn, pixel_color, memory_address,
 			begin
 				for (sub_index = BITS_PER_RGB - 1; sub_index >= 0; sub_index = sub_index - 1)
 				begin
-					VGA_R[sub_index+index] <= on_screen & pixel_color[sub_index + BITS_PER_RGB*2];
-					VGA_G[sub_index+index] <= on_screen & pixel_color[sub_index + BITS_PER_RGB];
-					VGA_B[sub_index+index] <= on_screen & pixel_color[sub_index];
+					VGA_R[sub_index+index] <= on_screen & pixel_color_eff[sub_index + BITS_PER_RGB*2];
+					VGA_G[sub_index+index] <= on_screen & pixel_color_eff[sub_index + BITS_PER_RGB];
+					VGA_B[sub_index+index] <= on_screen & pixel_color_eff[sub_index];
 				end
 			end	
 	end
